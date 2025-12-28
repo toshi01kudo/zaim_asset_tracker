@@ -1,0 +1,45 @@
+name: Linter and Formatter
+
+on: push
+
+# GITHUB_TOKEN に書き込み権限を与える設定
+permissions:
+  contents: write
+
+jobs:
+  linter-formatter-for-python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyproject-flake8 black
+      - name: Format by black
+        run: |
+          black .
+      - name: Commit files
+        continue-on-error: true
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          # 変更がある場合のみコミット・プッシュを実行
+          if ! git diff --exit-code --quiet; then
+            git add .
+            git commit -m "format by black [skip ci]"
+            git push
+            echo "Successfully formatted and pushed changes."
+          else
+            echo "No changes found. Skipping commit."
+          fi
+      - name: Check by flake8
+        run: |
+          pflake8 --count --show-source --statistics .
