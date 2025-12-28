@@ -268,7 +268,7 @@ class DataProcessor:
                     text = text.replace("(", "").replace(")", "")
 
                     return pd.to_datetime(f"{row['ScrapedYear']}年{text}", format="%Y年%m月%d日", errors="coerce")
-                except:
+                except Exception:
                     return pd.NaT
 
             df_clean["date_obj"] = df_clean.apply(parse_date, axis=1)
