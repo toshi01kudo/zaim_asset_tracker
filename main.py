@@ -372,6 +372,57 @@ class SheetUploader:
             logging.error(f"アップロードエラー: {e}")
             logging.error(traceback.format_exc())
 
+    def upload_insight(self, df_insight: pd.DataFrame):
+        if df_insight.empty:
+            return
+
+        logging.info("インサイト分析結果をアップロード中...")
+        try:
+            # "Monthly_Insight" という名前のシートを取得、なければ作成
+            sheet_title = "Monthly_Insight"
+            try:
+                worksheet = self.client.open_by_key(self.config.SPREADSHEET_KEY).worksheet(sheet_title)
+            except gspread.WorksheetNotFound:
+                worksheet = self.client.open_by_key(self.config.SPREADSHEET_KEY).add_worksheet(
+                    title=sheet_title, rows=100, cols=20
+                )
+
+            worksheet.clear()
+            worksheet.update([df_insight.columns.values.tolist()] + df_insight.values.tolist())
+            logging.info("インサイトのアップロード完了")
+        except Exception as e:
+            logging.error(f"インサイトのアップロードエラー: {e}")
+            logging.error(traceback.format_exc())
+
+    def fetch_all_data(self) -> pd.DataFrame:
+        """スプレッドシートの全データを読み込んでDataFrameで返す"""
+        logging.info("スプレッドシートからデータを読み込み中...")
+        try:
+            sheet = self.client.open_by_key(self.config.SPREADSHEET_KEY).sheet1
+            data = sheet.get_all_values()
+
+            if not data:
+                return pd.DataFrame()
+
+            # 1行目をヘッダーとしてDF作成
+            headers = data[0]
+            df = pd.DataFrame(data[1:], columns=headers)
+
+            # 型変換（分析で必要な数値列などを処理）
+            if "出金" in df.columns:
+                df["出金"] = pd.to_numeric(df["出金"].astype(str).str.replace(",", ""), errors="coerce").fillna(0)
+            if "入金" in df.columns:
+                df["入金"] = pd.to_numeric(df["入金"].astype(str).str.replace(",", ""), errors="coerce").fillna(0)
+            if "date_obj" in df.columns:
+                df["date_obj"] = pd.to_datetime(df["date_obj"])
+                # YearMonth列を再生成（念のため）
+                df["YearMonth"] = df["date_obj"].dt.strftime("%Y-%m")
+
+            return df
+        except Exception as e:
+            logging.error(f"データ読み込みエラー: {e}")
+            return pd.DataFrame()
+
 
 # --- メイン実行 ---
 def main():
