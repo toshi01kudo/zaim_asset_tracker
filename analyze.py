@@ -18,7 +18,7 @@ class InsightAnalyzer:
 
     # 定数として定義 (メンテナンス性の向上)
     THRESHOLD_AMOUNT = 5000  # 使いすぎ判定の金額閾値 (円)
-    THRESHOLD_RATE = 20      # 使いすぎ判定の比率閾値 (%)
+    THRESHOLD_RATE = 20  # 使いすぎ判定の比率閾値 (%)
 
     def __init__(self, df: pd.DataFrame):
         self.df = df
