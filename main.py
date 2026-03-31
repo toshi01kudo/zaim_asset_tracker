@@ -312,7 +312,22 @@ class DataProcessor:
             # 入金先カラムがない場合は全て出金扱い（安全策）
             df_clean["出金"] = df_clean["金額"]
 
-        return df_clean.fillna("")
+        # 文字列列のみNaNを空文字列に変換（数値列は保持）
+        str_columns = df_clean.select_dtypes(include=["object"]).columns
+        df_clean[str_columns] = df_clean[str_columns].fillna("")
+
+        # 数値列のNaNもアップロード前に0へ正規化しておく（Year / Month など）
+        # Year / Month / ScrapedYear は float になりがちなので、明示的に整数型へ揃える
+        int_like_cols = [c for c in ["Year", "Month", "ScrapedYear"] if c in df_clean.columns]
+        for col in int_like_cols:
+            df_clean[col] = pd.to_numeric(df_clean[col], errors="coerce").fillna(0).astype("Int64")
+        # 上記以外の数値列については NaN を 0 に埋める
+        num_columns = df_clean.select_dtypes(include=["number"]).columns
+        remaining_num_cols = [c for c in num_columns if c not in int_like_cols]
+        if remaining_num_cols:
+            df_clean[remaining_num_cols] = df_clean[remaining_num_cols].fillna(0)
+
+        return df_clean
 
 
 # --- 5. SheetUploader クラス ---
@@ -326,17 +341,14 @@ class SheetUploader:
     def upload(self, df_new: pd.DataFrame):
         logging.info("スプレッドシートへ安全にアップロード中（重複チェック）...")
         try:
+            # シートを一度だけ取得（API呼び出しの最適化）
             sheet = self.client.open_by_key(self.config.SPREADSHEET_KEY).sheet1
 
-            # 1. 既存データを全取得
-            existing_records = sheet.get_all_values()
+            # 1. 既存データを fetch_all_data() で取得（型変換済み）
+            df_old = self.fetch_all_data(sheet)
 
-            if existing_records:
-                # ヘッダーとデータに分離
-                headers = existing_records[0]
-                df_old = pd.DataFrame(existing_records[1:], columns=headers)
-
-                # 型合わせ
+            if not df_old.empty:
+                # 型合わせ（zaim_idを文字列に統一）
                 df_new["zaim_id"] = df_new["zaim_id"].astype(str)
                 if "zaim_id" in df_old.columns:
                     df_old["zaim_id"] = df_old["zaim_id"].astype(str)
@@ -363,7 +375,14 @@ class SheetUploader:
                 df_final = df_final.sort_values(by="date_obj", ascending=False)
                 df_final["date_obj"] = df_final["date_obj"].dt.strftime("%Y-%m-%d")
 
-            # 5. 書き込み
+            # 5. NaN / NaT をdtypeごとに埋めてからスプレッドシートに書き込み
+            obj_cols = df_final.select_dtypes(include=["object", "string"]).columns
+            num_cols = df_final.select_dtypes(include=["number"]).columns
+            if len(obj_cols) > 0:
+                df_final[obj_cols] = df_final[obj_cols].fillna("")
+            if len(num_cols) > 0:
+                df_final[num_cols] = df_final[num_cols].fillna(0)
+
             sheet.clear()
             sheet.update([df_final.columns.values.tolist()] + df_final.values.tolist())
             logging.info("アップロード完了")
@@ -394,11 +413,12 @@ class SheetUploader:
             logging.error(f"インサイトのアップロードエラー: {e}")
             logging.error(traceback.format_exc())
 
-    def fetch_all_data(self) -> pd.DataFrame:
+    def fetch_all_data(self, sheet=None) -> pd.DataFrame:
         """スプレッドシートの全データを読み込んでDataFrameで返す"""
         logging.info("スプレッドシートからデータを読み込み中...")
         try:
-            sheet = self.client.open_by_key(self.config.SPREADSHEET_KEY).sheet1
+            if sheet is None:
+                sheet = self.client.open_by_key(self.config.SPREADSHEET_KEY).sheet1
             data = sheet.get_all_values()
 
             if not data:
@@ -408,19 +428,39 @@ class SheetUploader:
             headers = data[0]
             df = pd.DataFrame(data[1:], columns=headers)
 
-            # 型変換（分析で必要な数値列などを処理）
+            logging.info(f"読み込んだデータ数: {len(df)}件")
+
+            # 型変換: 空文字列を0に置換してから数値化
             if "出金" in df.columns:
-                df["出金"] = pd.to_numeric(df["出金"].astype(str).str.replace(",", ""), errors="coerce").fillna(0)
+                # 空文字列を"0"に置換してから、¥マークとカンマを除去して数値化
+                df["出金"] = df["出金"].replace("", "0")
+                df["出金"] = df["出金"].astype(str).str.replace("¥", "", regex=False).str.replace(",", "", regex=False)
+                df["出金"] = pd.to_numeric(df["出金"], errors="coerce").fillna(0)
+
             if "入金" in df.columns:
-                df["入金"] = pd.to_numeric(df["入金"].astype(str).str.replace(",", ""), errors="coerce").fillna(0)
+                df["入金"] = df["入金"].replace("", "0")
+                df["入金"] = df["入金"].astype(str).str.replace("¥", "", regex=False).str.replace(",", "", regex=False)
+                df["入金"] = pd.to_numeric(df["入金"], errors="coerce").fillna(0)
+
+            # ScrapedYear, Year, Monthを数値型に変換
+            if "ScrapedYear" in df.columns:
+                df["ScrapedYear"] = pd.to_numeric(df["ScrapedYear"], errors="coerce").fillna(0).astype(int)
+
+            if "Year" in df.columns:
+                df["Year"] = pd.to_numeric(df["Year"], errors="coerce").fillna(0).astype(int)
+
+            if "Month" in df.columns:
+                df["Month"] = pd.to_numeric(df["Month"], errors="coerce").fillna(0).astype(int)
+
             if "date_obj" in df.columns:
-                df["date_obj"] = pd.to_datetime(df["date_obj"])
+                df["date_obj"] = pd.to_datetime(df["date_obj"], errors="coerce")
                 # YearMonth列を再生成（念のため）
                 df["YearMonth"] = df["date_obj"].dt.strftime("%Y-%m")
 
             return df
         except Exception as e:
             logging.error(f"データ読み込みエラー: {e}")
+            logging.error(traceback.format_exc())
             return pd.DataFrame()
 
 
